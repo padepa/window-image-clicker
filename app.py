@@ -264,6 +264,7 @@ class AutoClickerApp(tk.Tk):
         self.capture_start_x = 0
         self.capture_start_y = 0
         self.capture_rect: Optional[int] = None
+        self.capture_dragging = False
         self._normal_alpha = 1.0
 
         self._build_vars()
@@ -688,10 +689,7 @@ class AutoClickerApp(tk.Tk):
         if self.capture_window is not None:
             return
 
-        self._normal_alpha = float(self.attributes("-alpha") or 1.0)
-        self.attributes("-alpha", 0.0)
-        self.update()
-        self.after(150, lambda: self._begin_template_capture(account.window_title))
+        self.after(50, lambda: self._begin_template_capture(account.window_title))
 
     def _begin_template_capture(self, window_title: str = "") -> None:
         try:
@@ -704,27 +702,57 @@ class AutoClickerApp(tk.Tk):
             return
 
         self.capture_window = tk.Toplevel(self)
-        self.capture_window.overrideredirect(True)
         self.capture_window.attributes("-topmost", True)
-        self.capture_window.configure(bg="black")
+        self.capture_window.title("截图取模板")
+        self.capture_window.configure(bg="#1f1f1f")
         self.capture_window.bind("<Escape>", lambda _event: self.cancel_template_capture())
 
         width, height = self.capture_image.size
-        self.capture_window.geometry(f"{width}x{height}+0+0")
-        self.capture_canvas = tk.Canvas(self.capture_window, width=width, height=height, highlightthickness=0, cursor="crosshair")
-        self.capture_canvas.pack(fill="both", expand=True)
-        self.capture_canvas.create_image(0, 0, image=self.capture_photo, anchor="nw")
-        self.capture_canvas.create_text(
-            20,
-            20,
-            text="拖动鼠标框选模板区域，回车保存，Esc 取消",
-            anchor="nw",
-            fill="#ffeb3b",
-            font=("Microsoft YaHei UI", 16, "bold"),
+        preview_width = min(max(width + 20, 960), 1600)
+        preview_height = min(max(height + 90, 700), 1000)
+        self.capture_window.geometry(f"{preview_width}x{preview_height}+80+60")
+        self.capture_window.minsize(900, 650)
+
+        hint = ttk.Label(
+            self.capture_window,
+            text="拖动鼠标框选模板区域，按回车保存，按 Esc 取消",
+            foreground="#f5f5f5",
+            background="#1f1f1f",
+            padding=(10, 8),
         )
+        hint.pack(anchor="w")
+
+        canvas_wrap = ttk.Frame(self.capture_window)
+        canvas_wrap.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        x_scroll = ttk.Scrollbar(canvas_wrap, orient="horizontal")
+        y_scroll = ttk.Scrollbar(canvas_wrap, orient="vertical")
+        self.capture_canvas = tk.Canvas(
+            canvas_wrap,
+            width=min(width, preview_width - 40),
+            height=min(height, preview_height - 120),
+            highlightthickness=0,
+            cursor="crosshair",
+            xscrollcommand=x_scroll.set,
+            yscrollcommand=y_scroll.set,
+            bg="black",
+        )
+        x_scroll.config(command=self.capture_canvas.xview)
+        y_scroll.config(command=self.capture_canvas.yview)
+        self.capture_canvas.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        canvas_wrap.columnconfigure(0, weight=1)
+        canvas_wrap.rowconfigure(0, weight=1)
+
+        image_item = self.capture_canvas.create_image(0, 0, image=self.capture_photo, anchor="nw", tags=("capture_image",))
+        self.capture_canvas.config(scrollregion=(0, 0, width, height))
         self.capture_canvas.bind("<ButtonPress-1>", self.on_capture_press)
         self.capture_canvas.bind("<B1-Motion>", self.on_capture_drag)
         self.capture_canvas.bind("<ButtonRelease-1>", self.on_capture_release)
+        self.capture_canvas.tag_bind("capture_image", "<ButtonPress-1>", self.on_capture_press)
+        self.capture_canvas.tag_bind("capture_image", "<B1-Motion>", self.on_capture_drag)
+        self.capture_canvas.tag_bind("capture_image", "<ButtonRelease-1>", self.on_capture_release)
         self.capture_window.bind("<Return>", lambda _event: self.finish_template_capture())
         self.capture_window.update_idletasks()
         self.capture_window.lift()
@@ -792,28 +820,34 @@ class AutoClickerApp(tk.Tk):
     def on_capture_press(self, event) -> None:
         if self.capture_canvas is None:
             return
-        self.capture_start_x = event.x
-        self.capture_start_y = event.y
+        self.capture_dragging = True
+        self.capture_start_x = int(self.capture_canvas.canvasx(event.x))
+        self.capture_start_y = int(self.capture_canvas.canvasy(event.y))
         if self.capture_rect is not None:
             self.capture_canvas.delete(self.capture_rect)
         self.capture_rect = self.capture_canvas.create_rectangle(
-            event.x,
-            event.y,
-            event.x,
-            event.y,
+            self.capture_start_x,
+            self.capture_start_y,
+            self.capture_start_x,
+            self.capture_start_y,
             outline="#ff3b30",
             width=2,
         )
 
     def on_capture_drag(self, event) -> None:
-        if self.capture_canvas is None or self.capture_rect is None:
+        if self.capture_canvas is None or self.capture_rect is None or not self.capture_dragging:
             return
-        self.capture_canvas.coords(self.capture_rect, self.capture_start_x, self.capture_start_y, event.x, event.y)
+        current_x = int(self.capture_canvas.canvasx(event.x))
+        current_y = int(self.capture_canvas.canvasy(event.y))
+        self.capture_canvas.coords(self.capture_rect, self.capture_start_x, self.capture_start_y, current_x, current_y)
 
     def on_capture_release(self, event) -> None:
         if self.capture_canvas is None or self.capture_rect is None:
             return
-        self.capture_canvas.coords(self.capture_rect, self.capture_start_x, self.capture_start_y, event.x, event.y)
+        self.capture_dragging = False
+        current_x = int(self.capture_canvas.canvasx(event.x))
+        current_y = int(self.capture_canvas.canvasy(event.y))
+        self.capture_canvas.coords(self.capture_rect, self.capture_start_x, self.capture_start_y, current_x, current_y)
 
     def finish_template_capture(self) -> None:
         if self.capture_image is None or self.capture_rect is None or self.capture_canvas is None:
@@ -835,8 +869,6 @@ class AutoClickerApp(tk.Tk):
         cropped.save(file_path)
         self.point_image_var.set(str(file_path.resolve()))
         self.cancel_template_capture(show_main=False)
-        self.attributes("-alpha", self._normal_alpha)
-        self.deiconify()
         self.lift()
         self.focus_force()
         self.log(f"模板图片已保存：{file_path}")
@@ -850,9 +882,8 @@ class AutoClickerApp(tk.Tk):
         self.capture_photo = None
         self.capture_image = None
         self.capture_rect = None
+        self.capture_dragging = False
         if show_main:
-            self.attributes("-alpha", self._normal_alpha)
-            self.deiconify()
             self.lift()
             self.focus_force()
 
@@ -952,7 +983,6 @@ class AutoClickerApp(tk.Tk):
             self.hotkey_listener.stop()
         if self.capture_window is not None:
             self.cancel_template_capture(show_main=False)
-        self.attributes("-alpha", self._normal_alpha)
         self.destroy()
 
 
